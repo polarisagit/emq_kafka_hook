@@ -20,7 +20,12 @@
 
 -include_lib("brod/include/brod_int.hrl").
 
--define(TEST_TOPIC, <<"emq_broker_message">>).
+-define(EMQ_HOOK_TOPIC, "emq_broker_message").
+  
+
+-define(EMQ_HOOK_TOPIC_VALUE, "messageAPI").
+
+-define(NUM_PARTITIONS, 1).
 
 -export([load/1, unload/0]).
 
@@ -34,11 +39,14 @@
 
 -export([on_message_publish/2, on_message_delivered/4, on_message_acked/4]).
 
-%% Called when the plugin application start
+-define(LOG(Level, Format, Args), lager:Level("Kafka Hook: " ++ Format, Args)).
+
+-define(EMPTY(S), (S == <<"">> orelse S == undefined)).
+ 
 load(Env) ->
     brod_init([Env]),
-    %%emqttd:hook('client.connected', fun ?MODULE:on_client_connected/3, [Env]),
-    %%emqttd:hook('client.disconnected', fun ?MODULE:on_client_disconnected/3, [Env]),
+    emqttd:hook('client.connected', fun ?MODULE:on_client_connected/3, [Env]),
+    emqttd:hook('client.disconnected', fun ?MODULE:on_client_disconnected/3, [Env]),
     emqttd:hook('client.subscribe', fun ?MODULE:on_client_subscribe/4, [Env]),
     emqttd:hook('client.unsubscribe', fun ?MODULE:on_client_unsubscribe/4, [Env]),
     emqttd:hook('session.created', fun ?MODULE:on_session_created/3, [Env]),
@@ -49,136 +57,145 @@ load(Env) ->
     emqttd:hook('message.delivered', fun ?MODULE:on_message_delivered/4, [Env]),
     emqttd:hook('message.acked', fun ?MODULE:on_message_acked/4, [Env]).
 
-on_client_connected(ConnAck, Client = #mqtt_client{client_id = ClientId}, _Env) ->
-    io:format("client ~s connected, connack: ~w~n", [ClientId, ConnAck]),
-    Json = mochijson2:encode([
-        {type, <<"connected">>},
-        {client_id, ClientId},
-        {cluster_node, node()},
-        {ts, emqttd_time:now_ms()}
-    ]),
-    
-    %%ok = brod:produce_sync(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_1">>, list_to_binary(Json)),
-    {ok, CallRef} = brod:produce(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_1">>, list_to_binary(Json)),
-    receive
-        #brod_produce_reply{ call_ref = CallRef
-                           , result   = brod_produce_req_acked
-                       } ->
-        io:format("brod_produce_reply:ok ~n"),
-        ok
-    after 5000 ->
-        io:format("brod_produce_reply:exit ~n"),
-        erlang:exit(timeout)
-        %%ct:fail({?MODULE, ?LINE, timeout})
-    end,
-
+on_client_connected(ConnAck, Client = #mqtt_client{client_id = ClientId, username = Username}, _Env) ->
+    %?LOG(debug, "on_client_connected: ~p ~p", [ClientId, ConnAck]),
+    Params = [{action, client_connected},
+              {client_id, ClientId},
+              {username, Username},
+              {conn_ack, ConnAck},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
     {ok, Client}.
 
-on_client_disconnected(Reason, _Client = #mqtt_client{client_id = ClientId}, _Env) ->
-    io:format("client ~s disconnected, reason: ~w~n", [ClientId, Reason]),
-    Json = mochijson2:encode([
-        {type, <<"disconnected">>},
-        {client_id, ClientId},
-        {reason, Reason},
-        {cluster_node, node()},
-        {ts, emqttd_time:now_ms()}
-    ]),
-
-    %%ok = brod:produce_sync(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_2">>, list_to_binary(Json)),
-    {ok, CallRef} = brod:produce(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_2">>, list_to_binary(Json)),
-    receive
-        #brod_produce_reply{ call_ref = CallRef
-                           , result   = brod_produce_req_acked
-                       } ->
-        ok
-    after 5000 ->
-        ct:fail({?MODULE, ?LINE, timeout})
-    end,
-
+on_client_disconnected(Reason, _Client = #mqtt_client{client_id = ClientId, username = Username}, _Env) 
+    %?LOG(debug, "on_client_disconnected: ~p ~p", [ClientId, Reason]),
+    when is_atom(Reason) ->
+    Params = [{action, client_disconnected},
+              {client_id, ClientId},
+              {username, Username},
+              {reason, Reason},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
+    ok;
+on_client_disconnected(Reason, _Client, _Env) ->
+    ?LOG(error, "Client disconnected, cannot encode reason: ~p", [Reason]),
     ok.
 
 on_client_subscribe(ClientId, Username, TopicTable, _Env) ->
-    io:format("client(~s/~s) will subscribe: ~p~n", [Username, ClientId, TopicTable]),
-    {ok, TopicTable}.
+    %?LOG(debug, "on_client_subscribe: ~p ~p ~p", [ClientId, Username, TopicTable]),
+    %{ok, TopicTable}.
+    lists:foreach(fun({Topic, Opts}) ->
+            Params = [{action, client_subscribe},
+                      {client_id, ClientId},
+                      {username, Username},
+                      {topic, Topic},
+                      {opts, Opts},
+                      {ts, emqttd_time:now_ms()}],
+            send_kafka_request(Params)
+    end, TopicTable).
     
 on_client_unsubscribe(ClientId, Username, TopicTable, _Env) ->
-    io:format("client(~s/~s) unsubscribe ~p~n", [ClientId, Username, TopicTable]),
-    {ok, TopicTable}.
+    %?LOG(debug, "on_client_unsubscribe: ~p ~p ~p", [ClientId, Username, TopicTable]),
+    %{ok, TopicTable}.
+    lists:foreach(fun({Topic, Opts}) ->
+            Params = [{action, client_unsubscribe},
+                      {client_id, ClientId},
+                      {username, Username},
+                      {topic, Topic},
+                      {opts, Opts},
+                      {ts, emqttd_time:now_ms()}],
+            send_kafka_request(Params)
+    end, TopicTable).
 
 on_session_created(ClientId, Username, _Env) ->
-    io:format("session(~s/~s) created.", [ClientId, Username]).
+    %?LOG(debug, "on_session_created: ~p ~p", [ClientId, Username]),
+    Params = [{action, session_created},
+              {client_id, ClientId},
+              {username, Username},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
+    ok.
 
 on_session_subscribed(ClientId, Username, {Topic, Opts}, _Env) ->
-    io:format("session(~s/~s) subscribed: ~p~n", [Username, ClientId, {Topic, Opts}]),
+    %?LOG(debug, "on_session_subscribed: ~p ~p", [ClientId, Username]),
+    Params = [{action, session_subscribed},
+              {client_id, ClientId},
+              {username, Username},
+              {topic, Topic},
+              {opts, Opts},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
     {ok, {Topic, Opts}}.
 
 on_session_unsubscribed(ClientId, Username, {Topic, Opts}, _Env) ->
-    io:format("session(~s/~s) unsubscribed: ~p~n", [Username, ClientId, {Topic, Opts}]),
+    %?LOG(debug, "on_session_unsubscribed: ~p ~p ~p ~p", [ClientId, Username, Topic, Opts]),
+    Params = [{action, session_unsubscribed},
+              {client_id, ClientId},
+              {username, Username},
+              {topic, Topic},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
     ok.
 
 on_session_terminated(ClientId, Username, Reason, _Env) ->
-    io:format("session(~s/~s) terminated: ~p.", [ClientId, Username, Reason]).
+    %?LOG(debug, "on_session_terminated: ~p ~p ~p ", [ClientId, Username, Reason]),
+    Params = [{action, session_terminated},
+              {client_id, ClientId},
+              {username, Username},
+              {reason, Reason},
+              {ts, emqttd_time:now_ms()}],
+    send_kafka_request(Params),
+    ok.
 
-%% transform message and return
 on_message_publish(Message = #mqtt_message{topic = <<"$SYS/", _/binary>>}, _Env) ->
     {ok, Message};
-
 on_message_publish(Message, _Env) ->
-    io:format("publish ~s~n", [emqttd_message:format(Message)]),
-    
-    Id = Message#mqtt_message.id,
-    From = Message#mqtt_message.from, %需要登录和不需要登录这里的返回值是不一样的
-    Topic = Message#mqtt_message.topic,
-    Payload = Message#mqtt_message.payload,
-    Qos = Message#mqtt_message.qos,
-    Dup = Message#mqtt_message.dup,
-    Retain = Message#mqtt_message.retain,
-    Timestamp = Message#mqtt_message.timestamp,
-
-    ClientId = c(From),
-    Username = u(From),
-
-    Json = mochijson2:encode([
-			      {type, <<"publish">>},
-			      {client_id, ClientId},
-			      {message, [
-					 {username, Username},
-					 {topic, Topic},
-					 {payload, Payload},
-					 {qos, i(Qos)},
-					 {dup, i(Dup)},
-					 {retain, i(Retain)}
-					]},
-			      {cluster_node, node()},
-			      {ts, emqttd_time:now_ms()}
-			     ]),
-
-    %%ok = brod:produce_sync(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_3">>, list_to_binary(Json)),
-    {ok, CallRef} = brod:produce(brod_client_1, ?TEST_TOPIC, 0, <<"mykey_3">>, list_to_binary(Json)),
-    receive
-        #brod_produce_reply{ call_ref = CallRef
-                           , result   = brod_produce_req_acked
-                       } ->
-        ok
-    after 5000 ->
-        ct:fail({?MODULE, ?LINE, timeout})
-    end,
-
-    {ok, Message}.
+     Params = [{action, message_publish},
+                  {from_client_id, c(Message#mqtt_message.from)},
+                  {from_username, u(Message#mqtt_message.from)},
+                  {topic, Message#mqtt_message.topic},
+                  {qos, Message#mqtt_message.qos},
+                  {retain, Message#mqtt_message.retain},
+                  {payload, Message#mqtt_message.payload},
+                  {ts, emqttd_time:now_ms(Message#mqtt_message.timestamp)}],
+     send_kafka_request(Params),
+     {ok, Message}.
 
 on_message_delivered(ClientId, Username, Message, _Env) ->
-    io:format("delivered to client(~s/~s): ~s~n", [Username, ClientId, emqttd_message:format(Message)]),
+    %?LOG(debug, "on_message_delivered: ~p ~p ~p", [ClientId, Username, Message]),
+    Params = [{action, message_delivered},
+                  {client_id, ClientId},
+                  {username, Username},
+                  {from_client_id, c(Message#mqtt_message.from)},
+                  {from_username, u(Message#mqtt_message.from)},
+                  {topic, Message#mqtt_message.topic},
+                  {qos, Message#mqtt_message.qos},
+                  {retain, Message#mqtt_message.retain},
+                  {payload, Message#mqtt_message.payload},
+                  {ts, emqttd_time:now_ms(Message#mqtt_message.timestamp)}],
+    send_kafka_request(Params),
     {ok, Message}.
 
 on_message_acked(ClientId, Username, Message, _Env) ->
-    io:format("client(~s/~s) acked: ~s~n", [Username, ClientId, emqttd_message:format(Message)]),
+    %?LOG(debug, "on_message_acked: ~p ~p ~p", [ClientId, Username, Message]),
+    Params = [{action, message_acked},
+                  {client_id, ClientId},
+                  {username, Username},
+                  {from_client_id, c(Message#mqtt_message.from)},
+                  {from_username, u(Message#mqtt_message.from)},
+                  {topic, Message#mqtt_message.topic},
+                  {qos, Message#mqtt_message.qos},
+                  {retain, Message#mqtt_message.retain},
+                  {payload, Message#mqtt_message.payload},
+                  {ts, emqttd_time:now_ms(Message#mqtt_message.timestamp)}],
+    send_kafka_request(Params),
     {ok, Message}.
 
 %% Called when the plugin application stop
 unload() ->
-    %%application:stop(brod),
-    %%emqttd:unhook('client.connected', fun ?MODULE:on_client_connected/3),
-    %%emqttd:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+    application:stop(brod),
+    emqttd:unhook('client.connected', fun ?MODULE:on_client_connected/3),
+    emqttd:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
     emqttd:unhook('client.subscribe', fun ?MODULE:on_client_subscribe/4),
     emqttd:unhook('client.unsubscribe', fun ?MODULE:on_client_unsubscribe/4),
     emqttd:unhook('session.created', fun ?MODULE:on_session_created/3),
@@ -189,29 +206,62 @@ unload() ->
     emqttd:unhook('message.delivered', fun ?MODULE:on_message_delivered/4),
     emqttd:unhook('message.acked', fun ?MODULE:on_message_acked/4).
 
-%% ===================================================================
-%% brod_init https://github.com/klarna/brod
-%% ===================================================================
+%%--------------------------------------------------------------------
+%% Internal functions
+%%--------------------------------------------------------------------
+
+send_kafka_request(Params) ->
+    %?LOG(debug, "Params: ~p ", [Params]),
+    Json = jsx:encode(Params),
+    Partition = getPartition(""),
+    %?LOG(debug, " Partition: ~p ", [Partition]),
+    {ok, EmqHookTopic}=application:get_env(?MODULE, emq_hook_topic),
+    {ok, EmqHookTopicValue}=application:get_env(?MODULE, emq_hook_topic_value),
+
+    {ok, CallRef} = brod:produce(brod_client_1, EmqHookTopic, Partition, EmqHookTopicValue, Json),
+    receive
+        #brod_produce_reply{ call_ref = CallRef,
+                             result   = brod_produce_req_acked
+                }->
+        ok
+    after 5000 ->
+        ?LOG(error, "send_kafka_request timeout!~p",["5000"])
+    end.
+
 brod_init(_Env) ->
     {ok, _} = application:ensure_all_started(brod),
     {ok, Kafka} = application:get_env(?MODULE, kafka),
+    {ok, Settings} = application:get_env(?MODULE, settings),
+    %?LOG(debug, "brod_init Settings: ~p ",  [Settings]),
     KafkaBootstrapEndpoints = proplists:get_value(bootstrap_broker, Kafka),
-    %%KafkaBootstrapEndpoints = [{"127.0.0.1", 9092}], %%localhost,172.16.6.161
-    %%KafkaBootstrapEndpoints = [{"localhost", 9092}], %%localhost,172.16.6.161
-    %%ClientConfig = [{reconnect_cool_down_seconds, 10}],%% socket error recovery
-    ClientConfig = [],%% socket error recovery
-    Topic = ?TEST_TOPIC,
-    Partition = 0,
-    ok = brod:start_client(KafkaBootstrapEndpoints, brod_client_1, ClientConfig),
-    ok = brod:start_producer(brod_client_1, Topic, _ProducerConfig = []),
-    %%ok = brod:produce_sync(brod_client_1, Topic, Partition, <<"key1">>, <<"value1">>),
-    %%{ok, CallRef} = brod:produce(brod_client_1, Topic, Partition, <<"key1">>, <<"value2">>),
-    io:format("Init ekaf with ~p~n", [KafkaBootstrapEndpoints]).
+    %?LOG(debug, "brod_init kafkabootstrapendpoints: ~p ",  [KafkaBootstrapEndpoints]),
+    
+    EmqHookTopic = list_to_binary(proplists:get_value(emq_hook_topic, Settings, ?EMQ_HOOK_TOPIC)),
+    %?LOG(debug, "brod_init Emq_hook_topic: ~p ",  [EmqHookTopic]),
+    application:set_env(?MODULE, emq_hook_topic, EmqHookTopic),
+    application:set_env(?MODULE, emq_hook_topic_value, 
+			list_to_binary(proplists:get_value(emq_hook_topic_value, Settings, ?EMQ_HOOK_TOPIC_VALUE))),
+    application:set_env(?MODULE, num_partitions,
+                        proplists:get_value(num_partitions, Settings, ?NUM_PARTITIONS)), 
 
-i(true) -> 1;
-i(false) -> 0;
-i(I) when is_integer(I) -> I.
-c({ClientId, Username}) -> ClientId;
+    ok = brod:start_client(KafkaBootstrapEndpoints, brod_client_1),
+    ok = brod:start_producer(brod_client_1, EmqHookTopic, _ProducerConfig = []).
+
+
+c({ClientId, _}) -> ClientId;
 c(From) -> From.
-u({ClientId, Username}) -> Username;
+u({_, Username}) -> Username;
 u(From) -> From.
+
+getPartition(Key) when ?EMPTY(Key) ->
+    {ok, Num} = application:get_env(?MODULE, num_partitions),
+    %?LOG(debug, "getPartiton Num: ~p ",  [application:get_env(?MODULE, num_partitions)]),
+    %crypto:rand_uniform(0, ?NUM_PARTITIONS);
+    rand:uniform(Num)-1;
+getPartition(Key) ->
+    <<_, _, _, _, _,
+      _, _, _, _, _,
+      _, _, _, _, _,
+      NodeD16>> = crypto:hash(md5, Key),
+    {ok, Num} = application:get_env(?MODULE, num_partitions),
+    NodeD16 rem Num.
