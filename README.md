@@ -164,7 +164,6 @@ relx.config：
     "qos":0,
     "retain":true,
     "payload":"Hello world!",
-    "ts":1492412774,
     "ts":1548126301262
 }
 ```
@@ -182,7 +181,6 @@ relx.config：
     "qos":0,
     "retain":true,
     "payload":"Hello world!",
-    "ts":1492412826,
     "ts":1548126301262
 }
 ```
@@ -200,7 +198,6 @@ relx.config：
     "qos":1,
     "retain":true,
     "payload":"Hello world!",
-    "ts":1492412914,
     "ts":1548126301262
 }
 ```
