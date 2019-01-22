@@ -216,9 +216,9 @@ send_kafka_request(Params) ->
     Partition = getPartition(""),
     %?LOG(debug, " Partition: ~p ", [Partition]),
     {ok, EmqHookTopic}=application:get_env(?MODULE, emq_hook_topic),
-    {ok, EmqHookTopicValue}=application:get_env(?MODULE, emq_hook_topic_value),
+    {ok, EmqHookTopicKey}=application:get_env(?MODULE, emq_hook_topic_key),
 
-    {ok, CallRef} = brod:produce(brod_client_1, EmqHookTopic, Partition, EmqHookTopicValue, Json),
+    {ok, CallRef} = brod:produce(brod_client_1, EmqHookTopic, Partition, EmqHookTopicKey, Json),
     receive
         #brod_produce_reply{ call_ref = CallRef,
                              result   = brod_produce_req_acked

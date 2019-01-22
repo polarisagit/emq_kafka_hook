@@ -3,7 +3,7 @@ PROJECT_DESCRIPTION = EMQ Kafka Hook
 PROJECT_VERSION = 2.3.11
 
 DEPS = brod
-dep_brod = git https://github.com/emqtt/eredis v1.0.9
+dep_brod = git https://github.com/klarna/brod  v3.7.3
 
 
 BUILD_DEPS = emqttd cuttlefish
