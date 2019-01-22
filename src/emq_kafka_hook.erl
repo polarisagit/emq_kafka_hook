@@ -23,7 +23,7 @@
 -define(EMQ_HOOK_TOPIC, "emq_broker_message").
   
 
--define(EMQ_HOOK_TOPIC_VALUE, "messageAPI").
+-define(EMQ_HOOK_TOPIC_KEY, "messageKey").
 
 -define(NUM_PARTITIONS, 1).
 
@@ -239,8 +239,8 @@ brod_init(_Env) ->
     EmqHookTopic = list_to_binary(proplists:get_value(emq_hook_topic, Settings, ?EMQ_HOOK_TOPIC)),
     %?LOG(debug, "brod_init Emq_hook_topic: ~p ",  [EmqHookTopic]),
     application:set_env(?MODULE, emq_hook_topic, EmqHookTopic),
-    application:set_env(?MODULE, emq_hook_topic_value, 
-			list_to_binary(proplists:get_value(emq_hook_topic_value, Settings, ?EMQ_HOOK_TOPIC_VALUE))),
+    application:set_env(?MODULE, emq_hook_topic_key, 
+			list_to_binary(proplists:get_value(emq_hook_topic_key, Settings, ?EMQ_HOOK_TOPIC_KEY))),
     application:set_env(?MODULE, num_partitions,
                         proplists:get_value(num_partitions, Settings, ?NUM_PARTITIONS)), 
 
