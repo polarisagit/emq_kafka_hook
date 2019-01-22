@@ -14,7 +14,7 @@ Makefile：
 ```
 DEPS += emq_kafka_hook 
 
-dep_emq_redis_hook  = git https://github.com/polarisagit/emq_kafka_hook v2.3.11
+dep_emq_kafka_hook  = git https://github.com/polarisagit/emq_kafka_hook v2.3.11
 ```
 
 relx.config：
